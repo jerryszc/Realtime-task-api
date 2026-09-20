@@ -1,0 +1,64 @@
+from fastapi import APIRouter, Depends, status
+from sqlmodel import Session
+
+from app.core.deps import get_current_user
+from app.db.session import get_session
+from app.models.user import User
+from app.schemas.task import TaskCreate, TaskMove, TaskRead, TaskUpdate
+from app.services import task_service
+from app.services.ws_manager import manager
+
+router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+
+async def _notify(board_id: int, event: str, task_id: int | None = None) -> None:
+    await manager.broadcast(board_id, {"event": event, "board_id": board_id, "task_id": task_id})
+
+
+@router.post("", response_model=TaskRead, status_code=status.HTTP_201_CREATED)
+async def create_task(
+    data: TaskCreate,
+    current: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TaskRead:
+    task = task_service.create_task(session, current.id, data)
+    await _notify(task.board_id, "task.created", task.id)
+    return task
+
+
+@router.patch("/{task_id}", response_model=TaskRead)
+async def update_task(
+    task_id: int,
+    data: TaskUpdate,
+    current: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TaskRead:
+    task = task_service.update_task(session, current.id, task_id, data)
+    await _notify(task.board_id, "task.updated", task.id)
+    return task
+
+
+@router.post("/{task_id}/move", response_model=TaskRead)
+async def move_task(
+    task_id: int,
+    data: TaskMove,
+    current: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TaskRead:
+    task = task_service.move_task(session, current.id, task_id, data)
+    await _notify(task.board_id, "task.moved", task.id)
+    return task
+
+
+@router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_task(
+    task_id: int,
+    current: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> None:
+    task = session.get(task_service.Task, task_id)
+    board_id = task.board_id if task is not None else None
+    task_service.delete_task(session, current.id, task_id)
+    if board_id is not None:
+        await _notify(board_id, "task.deleted", task_id)
+    return None
