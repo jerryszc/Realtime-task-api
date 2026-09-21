@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, status
 from sqlmodel import Session
 
-from app.core.deps import get_current_user
+from app.core.deps import get_current_user, require_workspace_admin
 from app.db.session import get_session
 from app.models.user import User
 from app.models.workspace import WorkspaceRole
@@ -36,7 +36,7 @@ def list_workspaces(
 def add_member(
     workspace_id: int,
     data: MemberAdd,
-    current: User = Depends(get_current_user),
+    current: User = Depends(require_workspace_admin),
     session: Session = Depends(get_session),
 ) -> MemberRead:
     workspace_service.require_role(

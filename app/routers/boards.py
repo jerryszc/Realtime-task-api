@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlmodel import Session
 
 from app.core.deps import get_current_user
 from app.db.session import get_session
+from app.models.task import TaskPriority, TaskStatus
 from app.models.user import User
 from app.schemas.board import BoardCreate, BoardRead
 from app.schemas.task import TaskRead
@@ -43,5 +44,9 @@ def list_tasks(
     board_id: int,
     current: User = Depends(get_current_user),
     session: Session = Depends(get_session),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+    status: TaskStatus | None = Query(default=None),
+    priority: TaskPriority | None = Query(default=None),
 ) -> list[TaskRead]:
-    return task_service.list_tasks(session, current.id, board_id)
+    return task_service.list_tasks(session, current.id, board_id, skip, limit, status, priority)

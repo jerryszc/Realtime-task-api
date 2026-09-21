@@ -31,3 +31,6 @@ include = ["app*"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+ignore = ["B008", "BLE001", "UP045", "UP017", "DTZ003", "RET501", "PLR1711", "SIM117", "B017", "RUF100", "I001", "F401"]

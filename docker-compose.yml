@@ -9,7 +9,9 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-taskuser} -d ${POSTGRES_DB:-taskdb}"]
       interval: 5s
@@ -33,6 +35,12 @@ services:
       - "8001:8000"
     volumes:
       - ./app:/code/app
+    networks:
+      - internal
 
 volumes:
-  pgdata:
+  postgres_data:
+
+networks:
+  internal:
+    driver: bridge

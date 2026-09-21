@@ -3,6 +3,7 @@ from sqlmodel import Session
 
 from app.core.deps import get_current_user
 from app.db.session import get_session
+from app.models.board import Board
 from app.models.user import User
 from app.schemas.task import TaskCreate, TaskMove, TaskRead, TaskUpdate
 from app.services import task_service
@@ -11,8 +12,16 @@ from app.services.ws_manager import manager
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
-async def _notify(board_id: int, event: str, task_id: int | None = None) -> None:
-    await manager.broadcast(board_id, {"event": event, "board_id": board_id, "task_id": task_id})
+async def _notify(
+    session: Session, board_id: int, event: str, task_id: int | None = None
+) -> None:
+    message = {"event": event, "board_id": board_id, "task_id": task_id}
+    await manager.broadcast(board_id, message)
+    board = session.get(Board, board_id)
+    if board is not None:
+        await manager.broadcast_workspace(
+            board.workspace_id, {**message, "workspace_id": board.workspace_id}
+        )
 
 
 @router.post("", response_model=TaskRead, status_code=status.HTTP_201_CREATED)
@@ -22,7 +31,7 @@ async def create_task(
     session: Session = Depends(get_session),
 ) -> TaskRead:
     task = task_service.create_task(session, current.id, data)
-    await _notify(task.board_id, "task.created", task.id)
+    await _notify(session, task.board_id, "task.created", task.id)
     return task
 
 
@@ -34,7 +43,7 @@ async def update_task(
     session: Session = Depends(get_session),
 ) -> TaskRead:
     task = task_service.update_task(session, current.id, task_id, data)
-    await _notify(task.board_id, "task.updated", task.id)
+    await _notify(session, task.board_id, "task.updated", task.id)
     return task
 
 
@@ -46,7 +55,7 @@ async def move_task(
     session: Session = Depends(get_session),
 ) -> TaskRead:
     task = task_service.move_task(session, current.id, task_id, data)
-    await _notify(task.board_id, "task.moved", task.id)
+    await _notify(session, task.board_id, "task.moved", task.id)
     return task
 
 
@@ -60,5 +69,5 @@ async def delete_task(
     board_id = task.board_id if task is not None else None
     task_service.delete_task(session, current.id, task_id)
     if board_id is not None:
-        await _notify(board_id, "task.deleted", task_id)
+        await _notify(session, board_id, "task.deleted", task_id)
     return None

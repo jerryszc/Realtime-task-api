@@ -4,7 +4,7 @@ from fastapi import HTTPException, status
 from sqlmodel import Session, select
 
 from app.models.board import Board
-from app.models.task import Task
+from app.models.task import Task, TaskPriority, TaskStatus
 from app.schemas.task import TaskCreate, TaskMove, TaskUpdate
 from app.services.workspace_service import require_membership
 
@@ -43,12 +43,24 @@ def create_task(session: Session, user_id: int, data: TaskCreate) -> Task:
         )
 
 
-def list_tasks(session: Session, user_id: int, board_id: int) -> list[Task]:
+def list_tasks(
+    session: Session,
+    user_id: int,
+    board_id: int,
+    skip: int = 0,
+    limit: int = 50,
+    status: TaskStatus | None = None,
+    priority: TaskPriority | None = None,
+) -> list[Task]:
     board = _get_board_or_404(session, board_id)
     require_membership(session, board.workspace_id, user_id)
-    return list(
-        session.exec(select(Task).where(Task.board_id == board_id).order_by(Task.position)).all()
-    )
+    query = select(Task).where(Task.board_id == board_id)
+    if status is not None:
+        query = query.where(Task.status == status)
+    if priority is not None:
+        query = query.where(Task.priority == priority)
+    query = query.order_by(Task.position).offset(skip).limit(limit)
+    return list(session.exec(query).all())
 
 
 def update_task(session: Session, user_id: int, task_id: int, data: TaskUpdate) -> Task:
