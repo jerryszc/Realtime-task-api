@@ -11,7 +11,7 @@ env:
   POSTGRES_USER: taskuser
   POSTGRES_PASSWORD: taskpass
   POSTGRES_DB: taskdb
-  DATABASE_URL: postgresql+psycopg2://${{ env.POSTGRES_USER }}:${{ env.POSTGRES_PASSWORD }}@localhost:5432/${{ env.POSTGRES_DB }}
+  DATABASE_URL: postgresql+psycopg2://taskuser:taskpass@localhost:5432/taskdb
   SECRET_KEY: test-secret-key-for-ci
 
 jobs:
@@ -69,12 +69,12 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: ${{ env.POSTGRES_USER }}
-          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
-          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          POSTGRES_USER: taskuser
+          POSTGRES_PASSWORD: taskpass
+          POSTGRES_DB: taskdb
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U ${{ env.POSTGRES_USER }} -d ${{ env.POSTGRES_DB }}"
+          --health-cmd "pg_isready -U taskuser -d taskdb"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
