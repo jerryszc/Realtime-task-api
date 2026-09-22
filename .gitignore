@@ -60,3 +60,8 @@ logs/
 # Alembic
 alembic/__pycache__/
 alembic/versions/__pycache__/
+
+# AI / Tool configs
+agents.md
+qa-agent.md
+.opencode/
