@@ -8,9 +8,7 @@ from app.services.workspace_service import require_membership, require_role
 
 
 def create_board(session: Session, user_id: int, data: BoardCreate) -> Board:
-    require_role(
-        session, data.workspace_id, user_id, [WorkspaceRole.owner, WorkspaceRole.admin]
-    )
+    require_role(session, data.workspace_id, user_id, [WorkspaceRole.owner, WorkspaceRole.admin])
     try:
         board = Board(
             workspace_id=data.workspace_id, title=data.title, description=data.description
@@ -26,7 +24,7 @@ def create_board(session: Session, user_id: int, data: BoardCreate) -> Board:
         session.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create board"
-        )
+        ) from None
 
 
 def list_boards(session: Session, user_id: int, workspace_id: int) -> list[Board]:

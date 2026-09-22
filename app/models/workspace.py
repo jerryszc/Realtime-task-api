@@ -1,5 +1,5 @@
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Optional
 
 from sqlmodel import Field, Relationship, SQLModel
@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from app.models.user import User
 
 
-class WorkspaceRole(str, Enum):
+class WorkspaceRole(StrEnum):
     owner = "owner"
     admin = "admin"
     member = "member"

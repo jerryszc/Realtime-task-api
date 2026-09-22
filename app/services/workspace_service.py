@@ -41,9 +41,7 @@ def create_workspace(session: Session, owner_id: int, data: WorkspaceCreate) -> 
         ws = Workspace(name=data.name, slug=data.slug, owner_id=owner_id)
         session.add(ws)
         session.flush()
-        session.add(
-            WorkspaceMember(workspace_id=ws.id, user_id=owner_id, role=WorkspaceRole.owner)
-        )
+        session.add(WorkspaceMember(workspace_id=ws.id, user_id=owner_id, role=WorkspaceRole.owner))
         session.commit()
         session.refresh(ws)
         return ws
@@ -54,7 +52,7 @@ def create_workspace(session: Session, owner_id: int, data: WorkspaceCreate) -> 
         session.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create workspace"
-        )
+        ) from None
 
 
 def list_user_workspaces(session: Session, user_id: int) -> list[Workspace]:
@@ -77,9 +75,7 @@ def add_member(session: Session, workspace_id: int, data: MemberAdd) -> Workspac
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
         if _ensure_member(session, workspace_id, data.user_id) is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already a member")
-        member = WorkspaceMember(
-            workspace_id=workspace_id, user_id=data.user_id, role=data.role
-        )
+        member = WorkspaceMember(workspace_id=workspace_id, user_id=data.user_id, role=data.role)
         session.add(member)
         session.commit()
         session.refresh(member)
@@ -91,4 +87,4 @@ def add_member(session: Session, workspace_id: int, data: MemberAdd) -> Workspac
         session.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not add member"
-        )
+        ) from None

@@ -40,7 +40,7 @@ def create_task(session: Session, user_id: int, data: TaskCreate) -> Task:
         session.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create task"
-        )
+        ) from None
 
 
 def list_tasks(
@@ -85,7 +85,7 @@ def update_task(session: Session, user_id: int, task_id: int, data: TaskUpdate) 
         session.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not update task"
-        )
+        ) from None
 
 
 def move_task(session: Session, user_id: int, task_id: int, data: TaskMove) -> Task:
@@ -114,4 +114,4 @@ def delete_task(session: Session, user_id: int, task_id: int) -> None:
         session.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not delete task"
-        )
+        ) from None

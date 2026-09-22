@@ -1,5 +1,5 @@
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Optional
 
 from sqlmodel import Field, Relationship, SQLModel
@@ -9,13 +9,13 @@ if TYPE_CHECKING:
     from app.models.user import User
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     todo = "todo"
     in_progress = "in_progress"
     done = "done"
 
 
-class TaskPriority(str, Enum):
+class TaskPriority(StrEnum):
     low = "low"
     medium = "medium"
     high = "high"
