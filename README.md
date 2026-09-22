@@ -1,3 +1,12 @@
+# Realtime-task-api
+
+[![CI](https://github.com/jerryszc/Realtime-task-api/actions/workflows/ci.yml/badge.svg)](https://github.com/jerryszc/Realtime-task-api/actions/workflows/ci.yml)
+[![Docker](https://img.shields.io/badge/docker-ready-blue)](https://www.docker.com/)
+[![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+Un servicio híbrido de autenticación (SSO) y despachador de webhooks asíncrono...
+
 # Real-Time Collaborative Task Management API
 
 > **Executive Summary:** Production-ready asynchronous backend for collaborative task management featuring JWT authentication, strict RBAC (owner/admin/member), native WebSocket real-time broadcasting across board and workspace channels, and comprehensive test coverage.
