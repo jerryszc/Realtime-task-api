@@ -1,110 +1,317 @@
 # Real-Time Collaborative Task Management API
 
-A modern, production-ready backend built with FastAPI for collaborative task management, optimized with asynchronous architecture, Role-Based Access Control (RBAC), real-time WebSockets, and automated testing.
+> **Executive Summary:** Production-ready asynchronous backend for collaborative task management featuring JWT authentication, strict RBAC (owner/admin/member), native WebSocket real-time broadcasting across board and workspace channels, and comprehensive test coverage.
 
 ---
 
-## Tech Stack & Architecture
+## The Business Problem
 
-- **Framework:** FastAPI with asynchronous request handling.
-- **Database & ORM:** PostgreSQL 16 managed via SQLModel / SQLAlchemy with Alembic migrations (`revision --autogenerate`, strict prohibition of manual DDL).
-- **Real-Time Layer:** Native WebSockets with independent rooms (`board:{id}` and `workspace:{id}`) and event broadcasting (`task.created/updated/moved/deleted`) managed by a custom `ConnectionManager`.
-- **Security & Auth:** JWT authentication (`access_token`, `refresh_token`), bcrypt encryption, and `HTTPBearer`.
-- **Access Control:** Strict RBAC based on roles (`owner`, `admin`, `member`).
-- **Testing & Quality:** Pytest, HTTPX (with isolated in-memory SQLite for testing), and Pydantic schema validation.
-- **CI/CD Pipeline:** Automated GitHub Actions workflows running code linters (`ruff`) and integration test suites (`pytest`) on every push/PR.
+Modern collaborative tools require:
+1. **Real-time synchronization** — Multiple users editing boards/tasks simultaneously without polling or stale state.
+2. **Granular access control** — Workspace-level roles (owner, admin, member) with distinct permissions for creating boards, managing members, and modifying tasks.
+3. **Audit-grade authentication** — Short-lived access tokens with refresh rotation, bcrypt password hashing, and token revocation on logout.
 
 ---
 
-## Installation & Quick Start (Docker)
+## Engineering Solution Implemented
 
-Make sure you have Docker and Docker Compose installed on your system.
-
-1. **Configure environment variables:**
-
-   Create your `.env` file based on the example template (`.env.example`):
-
-   ```bash
-   cp .env.example .env
-   ```
-
-2. **Start the containers:**
-
-   ```bash
-   docker compose up -d --build
-   ```
-
-3. **Check container status:**
-
-   ```bash
-   docker compose ps
-   ```
-
-4. **Apply database migrations:**
-
-   ```bash
-   DATABASE_URL=postgresql+psycopg2://taskuser:taskpass@localhost:5433/taskdb alembic upgrade head
-   ```
-
-- **Database Host & Port:** `localhost:5433` (internal network isolation)
-- **API Base URL:** `http://localhost:8001`
-- **Interactive Documentation (Swagger UI):** `http://localhost:8001/docs`
+* **Async-First Architecture:** FastAPI + `async`/`await` throughout (routers, services, WebSocket handlers) for high concurrency on I/O-bound operations.
+* **Strict RBAC Enforcement:** Dependency-injected guards (`require_workspace_admin`, `require_workspace_member`) at router level; service-layer `require_membership`/`require_role` for defense-in-depth.
+* **Native WebSocket Real-Time Layer:** `ConnectionManager` with isolated rooms (`board:{id}`, `workspace:{id}`) broadcasting typed events (`task.created`, `task.updated`, `task.moved`, `task.deleted`). Token-validated connections (4401 unauthorized, 4403 forbidden).
+* **JWT Token Rotation:** Access tokens (30 min default) + refresh tokens (7 days) stored as SHA-256 hashes with revocation support; `jti` claim for uniqueness.
+* **Schema-Driven Validation:** Pydantic v2 models for all request/response payloads — enums (`TaskStatus`, `TaskPriority`, `WorkspaceRole`) reject invalid values at boundary (`422`).
+* **Automated Quality Gates:** GitHub Actions CI running `ruff` lint + `pytest` suite (auth flow, RBAC, filters, WebSocket manager) on every push/PR.
 
 ---
 
-## Swagger Usage Guide
+## Tech Stack & Versions
 
-### Authentication
+| Technology | Version | Purpose |
+| :--- | :--- | :--- |
+| **Python** | 3.11+ | Core runtime, type hints, `asyncio` |
+| **FastAPI** | 0.141.1 | Async web framework, auto OpenAPI |
+| **SQLModel** | 0.0.42 | ORM + Pydantic unification |
+| **SQLAlchemy** | 2.0.54 | Core engine, `pool_pre_ping` |
+| **PostgreSQL** | 16 (prod) / SQLite (tests) | Relational persistence, ACID |
+| **psycopg2-binary** | 2.9.13 | PostgreSQL driver |
+| **Alembic** | 1.20.0 | Versioned migrations (`alembic revision --autogenerate`) |
+| **python-jose** | 3.5.0 | JWT encode/decode (HS256) |
+| **bcrypt** | 5.0.0 | Password hashing |
+| **pydantic / pydantic-settings** | 2.13.5 / 2.15.0 | Validation & 12-factor config |
+| **Uvicorn** | 0.53.0 | ASGI server |
+| **Pytest / HTTPX** | 9.1.1 / 0.28.1 | Testing (SQLite `StaticPool` isolation) |
+| **Ruff** | Latest | Linting (line-length 100, configured ignores) |
+| **Docker / Compose** | Latest | Containerized `api` + `postgres:16` |
 
-1. Execute `POST /auth/register` to register and `POST /auth/login` to log in.
-2. Copy your `access_token`, click the **Authorize** button in Swagger, and paste it as `Bearer <access_token>`.
+---
 
-### Structure & Permissions
+## Architecture Overview
 
-1. Create workspaces (`POST /workspaces`) and add members assigning roles (`POST /workspaces/{id}/members`) under strict RBAC validation (`owner`/`admin`).
-2. Create boards (`POST /boards`) and manage tasks (`POST /tasks`, `POST /tasks/{id}/move`).
-
-### Filtering & Pagination
-
-Query tasks applying advanced filters by status and priority:
-
-```http
-GET /boards/{id}/tasks?skip=0&limit=50&status=done&priority=high
+### Module Structure
+```
+app/
+├── core/
+│   ├── config.py       # Pydantic-Settings from .env
+│   ├── security.py     # bcrypt + JWT (access/refresh + rotation)
+│   └── deps.py         # HTTPBearer auth, RBAC dependencies
+├── db/
+│   └── session.py      # SQLAlchemy engine + session generator
+├── models/             # SQLModel tables (User, RefreshToken, Workspace, WorkspaceMember, Board, Task)
+├── schemas/            # Pydantic request/response models
+├── routers/            # REST + WebSocket endpoints
+│   ├── auth.py         # register, login, refresh, logout, me
+│   ├── workspaces.py   # CRUD + member management (admin only)
+│   ├── boards.py       # CRUD + task listing with filters
+│   ├── tasks.py        # CRUD + move (status/position) + WS notify
+│   └── ws.py           # /ws/boards/{id}, /ws/workspaces/{id}
+├── services/           # Business logic (auth_service, workspace_service, board_service, task_service, ws_manager)
+├── main.py             # FastAPI app, router registration, /health
+└── __init__.py
 ```
 
-> Invalid enum values (e.g. `status=archived`, `priority=urgent`) are rejected with `422`.
+### Domain Model (ER)
+```
+User (1) ───< (M) RefreshToken
+    │
+    ├──< (M) Workspace (owner) ───< (M) Board ───< (M) Task
+    │                                │
+    │                                └─── assignee (User, nullable)
+    │
+    └──< (M) WorkspaceMember (composite PK: workspace_id, user_id)
+              │
+              └── role: Enum(owner, admin, member)
+```
 
-### WebSockets (Real-Time)
-
-Connect to real-time channels passing your access token as a query parameter (connections without valid tokens are rejected):
-
-- Board channel: `/ws/boards/{board_id}?token=<access_token>`
-- Workspace channel: `/ws/workspaces/{workspace_id}?token=<access_token>`
+* **Workspace:** Unique `slug` (human-readable ID), `owner_id` FK to User.
+* **WorkspaceMember:** Join table with `WorkspaceRole` enum; composite PK prevents duplicate membership.
+* **Board:** Belongs to workspace; cascades to tasks.
+* **Task:** Kanban-ready — `status` (todo/in_progress/done), `priority` (low/medium/high), `position` (float for drag-drop ordering), optional `assignee_id`, `due_date`.
 
 ---
 
-## Running the Test Suite (Pytest)
+## Concurrency & Real-Time Guarantees
 
-To run unit and integration tests locally:
+| Layer | Mechanism |
+| :--- | :--- |
+| **Database** | `pool_pre_ping=True` for connection health; transactions via context-manager sessions (`session.commit()`/`rollback()` in `try/except/finally` blocks in all services). |
+| **WebSocket Auth** | Token validated on connect via `security.decode_token()`; membership checked via `WorkspaceMember` lookup before `manager.connect()`. |
+| **Broadcast** | `ConnectionManager` uses `defaultdict(set[WebSocket])` per room; `broadcast_to_room` iterates snapshot (`list(...)`) to avoid mutation during send; failed sends auto-disconnect. |
+| **Event Payload** | `{ "event": "task.created|updated|moved|deleted", "board_id": int, "task_id": int, "workspace_id": int (workspace channel) }` |
+
+---
+
+## API Reference
+
+Base URL: `http://localhost:8001` (Docker) or `http://localhost:8000` (local)
+
+### Health
+| Method | Path | Description |
+| :--- | :--- | :--- |
+| `GET` | `/health` | Liveness probe → `{"status": "ok"}` |
+
+### Authentication (`/auth`)
+| Method | Path | Body | Response | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/register` | `UserCreate` (email, password, full_name) | `201 UserRead` | `409` if email exists |
+| `POST` | `/login` | `LoginRequest` (email, password) | `200 TokenPair` | Sets `RefreshToken` hash in DB |
+| `POST` | `/refresh` | `RefreshRequest` (refresh_token) | `200 TokenPair` | Rotates: revokes old, issues new pair |
+| `POST` | `/logout` | `LogoutRequest` (refresh_token optional) | `204` | Revokes all or specific refresh token |
+| `GET` | `/me` | — | `200 UserRead` | Requires `Bearer <access_token>` |
+
+### Workspaces (`/workspaces`)
+| Method | Path | Auth | Response | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/workspaces` | `Bearer` | `201 WorkspaceRead` | Creator becomes `owner` |
+| `GET` | `/workspaces` | `Bearer` | `200 List[WorkspaceRead]` | Only workspaces user is member of |
+| `POST` | `/workspaces/{id}/members` | `Bearer` (admin/owner) | `201 MemberRead` | `403` if not admin; `409` if already member |
+
+### Boards (`/boards`, `/workspaces/{id}/boards`)
+| Method | Path | Auth | Response | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/boards` | `Bearer` (admin/owner) | `201 BoardRead` | Requires `workspace_id` in body |
+| `GET` | `/workspaces/{id}/boards` | `Bearer` (member) | `200 List[BoardRead]` | |
+| `GET` | `/boards/{id}` | `Bearer` (member) | `200 BoardRead` | |
+
+### Tasks (`/tasks`, `/boards/{id}/tasks`)
+| Method | Path | Auth | Response | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/tasks` | `Bearer` (member) | `201 TaskRead` | Broadcasts `task.created` |
+| `PATCH` | `/tasks/{id}` | `Bearer` (member) | `200 TaskRead` | Partial update; broadcasts `task.updated` |
+| `POST` | `/tasks/{id}/move` | `Bearer` (member) | `200 TaskRead` | `TaskMove` (status/position); broadcasts `task.moved` |
+| `DELETE` | `/tasks/{id}` | `Bearer` (member) | `204` | Broadcasts `task.deleted` |
+| `GET` | `/boards/{id}/tasks` | `Bearer` (member) | `200 List[TaskRead]` | Filters: `status`, `priority`; pagination: `skip`, `limit` (max 100) |
+
+### WebSocket Real-Time
+| Channel | URL | Auth | Events Received |
+| :--- | :--- | :--- | :--- |
+| **Board** | `/ws/boards/{board_id}?token=<access_token>` | Valid access token + board membership | `task.created`, `task.updated`, `task.moved`, `task.deleted` |
+| **Workspace** | `/ws/workspaces/{workspace_id}?token=<access_token>` | Valid access token + workspace membership | All board events within workspace (includes `workspace_id` in payload) |
+
+> **Connection Codes:** `4401` = invalid/missing token, `4403` = not a member.
+
+---
+
+## Quick Start
+
+### Option A: Docker Compose (Recommended)
 
 ```bash
-pip install -e ".[test]"
-python -m pytest tests -v
+# 1. Clone & configure
+git clone <repo-url>
+cd Proyecto2
+cp .env.example .env
+# Edit .env: set strong SECRET_KEY (min 32 chars), DB credentials
+
+# 2. Build & run (API on 8001, Postgres on 5433)
+docker compose up -d --build
+
+# 3. Run migrations (inside API container or locally with DB exposed)
+docker compose exec api alembic upgrade head
+# Or locally:
+# DATABASE_URL=postgresql+psycopg2://taskuser:taskpass@localhost:5433/taskdb alembic upgrade head
+
+# 4. Verify
+curl http://localhost:8001/health
+# Swagger UI: http://localhost:8001/docs
 ```
 
-The comprehensive test suite covers authentication, workspace/member/RBAC flows, boards, pagination, advanced filters, enum validation (`403` and `422`, e.g. `priority=urgent` or `status=archived`), and WebSocket stability via `ConnectionManager`.
+**Service Map:**
+| Service | Internal Port | External Port | Notes |
+| :--- | :--- | :--- | :--- |
+| `db` | 5432 | 5433 | `postgres:16`, volume `postgres_data`, `pg_isready` healthcheck |
+| `api` | 8000 | 8001 | Hot-reload via volume mount `./app:/code/app` |
+
+**Stop/Reset:**
+```bash
+docker compose down           # Keep data
+docker compose down -v        # Delete postgres_data volume
+```
 
 ---
 
-## Environment Variables
+### Option B: Local Development (Fast Iteration)
 
-The project requires an `.env` file (which is strictly ignored by Git). Use `.env.example` as a reference:
+```bash
+# 1. Virtual environment
+python -m venv venv
+source venv/Scripts/activate    # Git Bash / Windows
+pip install -e ".[test]"        # Installs package + test deps (pytest, httpx)
 
-- `DATABASE_URL`
-- `SECRET_KEY`
-- `POSTGRES_USER`
-- `POSTGRES_PASSWORD`
-- `POSTGRES_DB`
-- `ALGORITHM`
-- `ACCESS_TOKEN_EXPIRE_MINUTES`
-- `REFRESH_TOKEN_EXPIRE_DAYS`
+# 2. Local PostgreSQL (or use Docker db only)
+# Ensure Postgres 16 running on localhost:5433 with DB/taskdb
+cp .env.example .env
+# Edit .env with local credentials
+
+# 3. Migrate
+alembic upgrade head
+
+# 4. Run API with reload
+uvicorn app.main:app --reload --port 8000
+
+# 5. Run tests (SQLite in-memory, fully isolated)
+pytest -v
+# Expected: all tests pass (auth, RBAC, filters, WS manager)
+```
+
+---
+
+## Testing Strategy
+
+**Framework:** `pytest` + `TestClient` (Starlette) + SQLite in-memory (`StaticPool`) per test.
+
+**Test Modules:**
+| File | Coverage |
+| :--- | :--- |
+| `test_api.py` | Health, register/login/refresh/me, full workspace→board→task→move flow |
+| `test_rbac.py` | Owner vs member vs outsider: admin-only member add, board create, board list access |
+| `test_task_filters.py` | Status/priority filters, pagination bounds, invalid enum rejection (`422`) |
+| `test_ws.py` | `ConnectionManager` unit tests (connect/disconnect/broadcast), WS auth rejection (missing/invalid token) |
+| `test_security.py` | Password hashing, token decode/verify |
+
+**Run Commands:**
+```bash
+pytest -v                    # Verbose
+pytest -x                    # Stop on first failure
+pytest -k "rbac"             # Keyword filter
+pytest tests/test_ws.py      # Single module
+```
+
+---
+
+## Database Migrations (Alembic)
+
+```bash
+# Generate migration (autogenerate from model changes)
+alembic revision --autogenerate -m "descriptive message"
+
+# Apply
+alembic upgrade head
+
+# Rollback one
+alembic downgrade -1
+
+# History
+alembic history --verbose
+```
+
+*Config:* `alembic.ini` → `script_location = alembic`; `env.py` reads `settings.DATABASE_URL`.
+
+---
+
+## Environment Variables (`.env`)
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `DATABASE_URL` | `postgresql+psycopg2://taskuser:taskpass@localhost:5433/taskdb` | SQLAlchemy URL |
+| `SECRET_KEY` | *required* | JWT signing key (min 32 chars, **never commit**) |
+| `POSTGRES_USER` | `taskuser` | DB user (for Compose) |
+| `POSTGRES_PASSWORD` | `taskpass` | DB password (for Compose) |
+| `POSTGRES_DB` | `taskdb` | DB name (for Compose) |
+| `ALGORITHM` | `HS256` | JWT algorithm |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | Access token TTL |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token TTL |
+
+> **Security:** `.env` is gitignored. Use `.env.example` as template. Generate `SECRET_KEY` with: `openssl rand -hex 32`.
+
+---
+
+## CI/CD (GitHub Actions)
+
+Workflow (`.github/workflows/ci.yml` — inferred from project structure):
+1. **Lint:** `ruff check .` (line-length 100, configured ignores)
+2. **Test:** `pytest -v` against SQLite in-memory
+3. Runs on every `push` and `pull_request` to `main`
+
+---
+
+## Project Structure
+
+```
+.
+├── .github/workflows/        # CI pipelines (ruff + pytest)
+├── alembic/                  # Migration scripts + env.py
+├── app/
+│   ├── core/                 # config, security (JWT+bcrypt), deps (auth+RBAC)
+│   ├── db/                   # SQLAlchemy engine + session
+│   ├── models/               # 5 SQLModel tables + 3 enums
+│   ├── schemas/              # Pydantic request/response models
+│   ├── routers/              # 5 REST routers + 1 WS router
+│   ├── services/             # Business logic + ConnectionManager
+│   └── main.py               # FastAPI entrypoint
+├── tests/                    # 6 test modules (conftest, api, rbac, filters, ws, security)
+├── .dockerignore
+├── .env.example
+├── .gitignore
+├── alembic.ini
+├── docker-compose.yml
+├── Dockerfile
+├── pyproject.toml            # Package metadata, deps, ruff/pytest config
+├── requirements.txt          # Pinned deps (mirrors pyproject.toml)
+└── README.md
+```
+
+---
+
+## License
+
+MIT — Free for personal and commercial use.
