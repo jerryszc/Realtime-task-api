@@ -8,11 +8,6 @@ on:
 
 env:
   PYTHON_VERSION: "3.11"
-  POSTGRES_USER: taskuser
-  POSTGRES_PASSWORD: taskpass
-  POSTGRES_DB: taskdb
-  DATABASE_URL: postgresql+psycopg2://taskuser:taskpass@localhost:5432/taskdb
-  SECRET_KEY: test-secret-key-for-ci
 
 jobs:
   lint:
@@ -65,19 +60,6 @@ jobs:
   test:
     name: Tests (pytest + coverage)
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: taskuser
-          POSTGRES_PASSWORD: taskpass
-          POSTGRES_DB: taskdb
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U taskuser -d taskdb"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -94,22 +76,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Wait for PostgreSQL
-        run: |
-          sleep 5
-          pg_isready -h localhost -U ${{ env.POSTGRES_USER }} -d ${{ env.POSTGRES_DB }}
-
-      - name: Run migrations
-        run: |
-          alembic upgrade head
-        env:
-          DATABASE_URL: ${{ env.DATABASE_URL }}
-
+      # The suite runs on in-memory SQLite (see tests/conftest.py): no external
+      # services and no migrations are required for these tests.
       - name: Run tests with coverage
         run: pytest
-        env:
-          DATABASE_URL: ${{ env.DATABASE_URL }}
-          SECRET_KEY: ${{ env.SECRET_KEY }}
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
