@@ -57,9 +57,7 @@ async def board_ws(websocket: WebSocket, board_id: int, token: str | None = None
 
 
 @router.websocket("/ws/workspaces/{workspace_id}")
-async def workspace_ws(
-    websocket: WebSocket, workspace_id: int, token: str | None = None
-) -> None:
+async def workspace_ws(websocket: WebSocket, workspace_id: int, token: str | None = None) -> None:
     user_id = _decode_user_id(token)
     if user_id is None:
         await websocket.close(code=4401)

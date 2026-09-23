@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 from fastapi import HTTPException, status
 from sqlmodel import Session, select
 
@@ -62,7 +64,9 @@ def list_user_workspaces(session: Session, user_id: int) -> list[Workspace]:
     ids = [m.workspace_id for m in memberships]
     if not ids:
         return []
-    return list(session.exec(select(Workspace).where(Workspace.id.in_(ids))).all())
+    # Workspace.id is Optional[int] at the type level (SQLModel PK pattern);
+    # rows reaching this query always carry a real id, so the cast is sound.
+    return list(session.exec(select(Workspace).where(cast(Any, Workspace.id).in_(ids))).all())
 
 
 def add_member(session: Session, workspace_id: int, data: MemberAdd) -> WorkspaceMember:

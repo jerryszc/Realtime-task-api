@@ -16,9 +16,7 @@ def test_member_rbac_admin_only(client: TestClient) -> None:
     member_h = _register_login(client, "member@example.com")
     outsider_h = _register_login(client, "outsider@example.com")
 
-    ws = client.post(
-        "/workspaces", json={"name": "W", "slug": "w-rbac"}, headers=owner_h
-    )
+    ws = client.post("/workspaces", json={"name": "W", "slug": "w-rbac"}, headers=owner_h)
     assert ws.status_code == 201
     ws_id = ws.json()["id"]
     member_id = client.get("/auth/me", headers=member_h).json()["id"]
@@ -43,9 +41,7 @@ def test_member_rbac_admin_only(client: TestClient) -> None:
     )
     assert board_forbidden.status_code == 403
 
-    board_ok = client.post(
-        "/boards", json={"workspace_id": ws_id, "title": "Y"}, headers=owner_h
-    )
+    board_ok = client.post("/boards", json={"workspace_id": ws_id, "title": "Y"}, headers=owner_h)
     assert board_ok.status_code == 201
 
     no_access = client.get(f"/workspaces/{ws_id}/boards", headers=outsider_h)

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any, cast
 
 from fastapi import HTTPException, status
 from sqlmodel import Session, select
@@ -59,7 +60,7 @@ def list_tasks(
         query = query.where(Task.status == status)
     if priority is not None:
         query = query.where(Task.priority == priority)
-    query = query.order_by(Task.position).offset(skip).limit(limit)
+    query = query.order_by(cast(Any, Task.position)).offset(skip).limit(limit)
     return list(session.exec(query).all())
 
 

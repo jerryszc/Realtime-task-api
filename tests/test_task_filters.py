@@ -39,22 +39,16 @@ def test_pagination_and_filters(client: TestClient) -> None:
         headers=headers,
     )
 
-    page = client.get(
-        f"/boards/{board_id}/tasks?skip=0&limit=2", headers=headers
-    )
+    page = client.get(f"/boards/{board_id}/tasks?skip=0&limit=2", headers=headers)
     assert page.status_code == 200
     assert len(page.json()) == 2
 
-    done = client.get(
-        f"/boards/{board_id}/tasks?status=done", headers=headers
-    )
+    done = client.get(f"/boards/{board_id}/tasks?status=done", headers=headers)
     assert done.status_code == 200
     assert len(done.json()) == 1
     assert done.json()[0]["status"] == "done"
 
-    high = client.get(
-        f"/boards/{board_id}/tasks?priority=high", headers=headers
-    )
+    high = client.get(f"/boards/{board_id}/tasks?priority=high", headers=headers)
     assert high.status_code == 200
     assert all(t["priority"] == "high" for t in high.json())
 
@@ -62,12 +56,11 @@ def test_pagination_and_filters(client: TestClient) -> None:
 def test_invalid_enum_rejected_422(client: TestClient) -> None:
     headers, board_id = _setup_board(client)
     bad_priority = client.post(
-        "/tasks", json={"board_id": board_id, "title": "Bad", "priority": "urgent"},
+        "/tasks",
+        json={"board_id": board_id, "title": "Bad", "priority": "urgent"},
         headers=headers,
     )
     assert bad_priority.status_code == 422
 
-    bad_status = client.get(
-        f"/boards/{board_id}/tasks?status=archived", headers=headers
-    )
+    bad_status = client.get(f"/boards/{board_id}/tasks?status=archived", headers=headers)
     assert bad_status.status_code == 422

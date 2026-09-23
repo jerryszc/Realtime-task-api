@@ -1,3 +1,5 @@
+from typing import cast
+
 from fastapi import APIRouter, Depends, status
 from sqlmodel import Session
 
@@ -40,7 +42,7 @@ def logout(
     current: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> None:
-    auth_service.logout(session, current.id, data.refresh_token)
+    auth_service.logout(session, cast(int, current.id), data.refresh_token)
     return None
 
 

@@ -1,4 +1,5 @@
 from collections import defaultdict
+from typing import Any
 
 from fastapi import WebSocket
 
@@ -26,7 +27,7 @@ class ConnectionManager:
         if existing is not None and len(existing) == 0:
             self.rooms.pop(room, None)
 
-    async def broadcast_to_room(self, room: str, message: dict) -> None:
+    async def broadcast_to_room(self, room: str, message: dict[str, Any]) -> None:
         for ws in list(self.rooms.get(room, set())):
             try:
                 await ws.send_json(message)
@@ -39,7 +40,7 @@ class ConnectionManager:
     def disconnect(self, board_id: int, websocket: WebSocket) -> None:
         self.disconnect_from_room(self.board_room(board_id), websocket)
 
-    async def broadcast(self, board_id: int, message: dict) -> None:
+    async def broadcast(self, board_id: int, message: dict[str, Any]) -> None:
         await self.broadcast_to_room(self.board_room(board_id), message)
 
     async def connect_workspace(self, workspace_id: int, websocket: WebSocket) -> None:
@@ -48,7 +49,7 @@ class ConnectionManager:
     def disconnect_workspace(self, workspace_id: int, websocket: WebSocket) -> None:
         self.disconnect_from_room(self.workspace_room(workspace_id), websocket)
 
-    async def broadcast_workspace(self, workspace_id: int, message: dict) -> None:
+    async def broadcast_workspace(self, workspace_id: int, message: dict[str, Any]) -> None:
         await self.broadcast_to_room(self.workspace_room(workspace_id), message)
 
     def active_connections(self, room: str) -> int:

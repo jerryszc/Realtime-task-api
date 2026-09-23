@@ -14,9 +14,7 @@ def test_register_login_refresh(client: TestClient) -> None:
     )
     assert reg.status_code == 201
 
-    login = client.post(
-        "/auth/login", json={"email": "a@example.com", "password": "secret123"}
-    )
+    login = client.post("/auth/login", json={"email": "a@example.com", "password": "secret123"})
     assert login.status_code == 200
     tokens = login.json()
     assert "access_token" in tokens and "refresh_token" in tokens
@@ -39,9 +37,7 @@ def test_workspace_board_task_flow(client: TestClient) -> None:
     token = login.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
-    ws = client.post(
-        "/workspaces", json={"name": "Team", "slug": "team"}, headers=headers
-    )
+    ws = client.post("/workspaces", json={"name": "Team", "slug": "team"}, headers=headers)
     assert ws.status_code == 201
     ws_id = ws.json()["id"]
 
@@ -53,9 +49,7 @@ def test_workspace_board_task_flow(client: TestClient) -> None:
     assert board.status_code == 201
     board_id = board.json()["id"]
 
-    task = client.post(
-        "/tasks", json={"board_id": board_id, "title": "Task 1"}, headers=headers
-    )
+    task = client.post("/tasks", json={"board_id": board_id, "title": "Task 1"}, headers=headers)
     assert task.status_code == 201
     task_id = task.json()["id"]
     assert task.json()["status"] == "todo"
