@@ -1,324 +1,410 @@
-# Realtime-task-api
+# Realtime Task API — Collaborative Boards over WebSockets
+
+**[English version →](README.en.md)**
+
+API colaborativa de tableros tipo Kanban con actualizaciones en tiempo real por WebSocket,
+aislamiento por sala, RBAC de tres roles y refresh tokens almacenados como hash.
 
 [![CI](https://github.com/jerryszc/Realtime-task-api/actions/workflows/ci.yml/badge.svg)](https://github.com/jerryszc/Realtime-task-api/actions/workflows/ci.yml)
-[![Docker](https://img.shields.io/badge/docker-ready-blue)](https://www.docker.com/)
-[![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688.svg)](https://fastapi.tiangolo.com/)
+[![MyPy strict](https://img.shields.io/badge/mypy-strict%20%7C%20passed-brightgreen.svg)](pyproject.toml)
+[![Tests](https://img.shields.io/badge/tests-11%20passing%20%7C%20coverage%20gate%2070%25-brightgreen.svg)](tests)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED.svg)](https://www.docker.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-# Real-Time Collaborative Task Management API
-
-> **Executive Summary:** Production-ready asynchronous backend for collaborative task management featuring JWT authentication, strict RBAC (owner/admin/member), native WebSocket real-time broadcasting across board and workspace channels, and comprehensive test coverage.
-
----
-
-## The Business Problem
-
-Modern collaborative tools require:
-1. **Real-time synchronization** — Multiple users editing boards/tasks simultaneously without polling or stale state.
-2. **Granular access control** — Workspace-level roles (owner, admin, member) with distinct permissions for creating boards, managing members, and modifying tasks.
-3. **Audit-grade authentication** — Short-lived access tokens with refresh rotation, bcrypt password hashing, and token revocation on logout.
+**Stack:** Python 3.11 · FastAPI · WebSockets · SQLModel · PostgreSQL 16 · Alembic · bcrypt · PyJWT (python-jose) · Pytest · Ruff · MyPy strict · Docker
 
 ---
 
-## Engineering Solution Implemented
+## El problema empresarial
 
-* **Async-First Architecture:** FastAPI + `async`/`await` throughout (routers, services, WebSocket handlers) for high concurrency on I/O-bound operations.
-* **Strict RBAC Enforcement:** Dependency-injected guards (`require_workspace_admin`, `require_workspace_member`) at router level; service-layer `require_membership`/`require_role` for defense-in-depth.
-* **Native WebSocket Real-Time Layer:** `ConnectionManager` with isolated rooms (`board:{id}`, `workspace:{id}`) broadcasting typed events (`task.created`, `task.updated`, `task.moved`, `task.deleted`). Token-validated connections (4401 unauthorized, 4403 forbidden).
-* **JWT Token Rotation:** Access tokens (30 min default) + refresh tokens (7 days) stored as SHA-256 hashes with revocation support; `jti` claim for uniqueness.
-* **Schema-Driven Validation:** Pydantic v2 models for all request/response payloads — enums (`TaskStatus`, `TaskPriority`, `WorkspaceRole`) reject invalid values at boundary (`422`).
-* **Automated Quality Gates:** GitHub Actions CI running `ruff` lint + `pytest` suite (auth flow, RBAC, filters, WebSocket manager) on every push/PR.
+En una herramienta de trabajo colaborativo, el problema no es guardar la tarea: es que las
+personas conflictúen sobre ella. Estas cuatro fallas dominan el costo real del producto.
+
+### 1. Dos personas toman la misma tarea porque no saben que el otro la tomó
+
+| Comportamiento | Consecuencia |
+| :--- | :--- |
+| El tablero solo se actualiza al recargar la página | Un compañero mueve una tarea a "En curso" hace diez minutos. Tú la abres, la cambias a "En curso" también, y trabajáis los dos sobre lo mismo. Una hora de trabajo duplicada que se pierde |
+| Polling cada pocos segundos | 12 peticiones por usuario por minuto que en su mayoría devuelven "nada ha cambiado". Con 50 usuarios son 600 peticiones/minute de las cuales un 95% se descarta. La base de datos paga el coste de una tráfico que no aporta información |
+
+**Lo que hace este servicio:** cuando una tarea se crea, se actualiza, se mueve o se
+elimina, el servidor **empuja** el evento a las conexiones abiertas de ese tablero. No hay
+recarga, no hay polling, y el tráfico de red es proporcional a los cambios reales, no al
+número de usuarios mirando la pantalla.
+
+### 2. Fuga de datos entre clientes en una aplicación multi-tenant
+
+Un SaaS de gestión donde 40 personas cuelgan el mismo espacio de trabajo. Un
+error en el broadcast significa que la empresa A recibe los movimientos de la empresa B: no
+un fallo visible, sino una fuga de datos que destruye la confianza en el producto y puede
+costar la retención del cliente.
+
+**Lo que hace este servicio:** las conexiones viven en **salas** nombradas, no en un único
+bus global. Cada tablero y cada espacio de trabajo son salas separadas, y un evento solo se
+difunde dentro de la sala correspondiente.
+
+### 3. Una conexión WebSocket es una puerta trasera a la autorización
+
+Este es el fallo de seguridad más fácil de introducir y el más difícil de detectar. Un
+WebSocket es una conexión de larga duración: **si se acepta sin verificar, la petición
+pasa por el estado del proceso** y la autorización checked en el momento del handshake deja
+de aplicarse. El usuario conserva acceso a los eventos de ese recurso aunque se le revoque
+el permiso o se elimine del espacio de trabajo.
+
+**Lo que hace este servicio:** la autorización se comprueba **en el handshake**, antes de
+aceptar la conexión, contra el token que llega en la query string (los navegadores no
+permiten cabeceras personalizadas en `new WebSocket()`).
+
+```python
+@router.websocket("/ws/boards/{board_id}")
+async def board_ws(websocket: WebSocket, board_id: int, token: str | None = None) -> None:
+    if not token:
+        await websocket.close(code=4401)   # sin credenciales
+        return
+    ...                                        # verificación de pertenencia al board
+        await websocket.close(code=4403)   # sin permiso
+    await manager.connect(board_id, websocket)
+```
+
+Los **códigos de cierre no son estándar a propósito**. 4401 y 4403 son el rango privado
+(`4000-4999`) definido por la RFC 6455, así que el cliente puede distinguir "tus
+credenciales caducaron" de "no tienes permiso" y de un cierre de red normal, y reacts en
+cada caso: reautenticarse, pedir acceso, o reconectar. Con el código 1005 genérico sería
+imposible saber qué pasó.
 
 ---
 
-## Tech Stack & Versions
+## Impacto verificable
 
-| Technology | Version | Purpose |
-| :--- | :--- | :--- |
-| **Python** | 3.11+ | Core runtime, type hints, `asyncio` |
-| **FastAPI** | 0.141.1 | Async web framework, auto OpenAPI |
-| **SQLModel** | 0.0.42 | ORM + Pydantic unification |
-| **SQLAlchemy** | 2.0.54 | Core engine, `pool_pre_ping` |
-| **PostgreSQL** | 16 (prod) / SQLite (tests) | Relational persistence, ACID |
-| **psycopg2-binary** | 2.9.13 | PostgreSQL driver |
-| **Alembic** | 1.20.0 | Versioned migrations (`alembic revision --autogenerate`) |
-| **python-jose** | 3.5.0 | JWT encode/decode (HS256) |
-| **bcrypt** | 5.0.0 | Password hashing |
-| **pydantic / pydantic-settings** | 2.13.5 / 2.15.0 | Validation & 12-factor config |
-| **Uvicorn** | 0.53.0 | ASGI server |
-| **Pytest / HTTPX** | 9.1.1 / 0.28.1 | Testing (SQLite `StaticPool` isolation) |
-| **Ruff** | Latest | Linting (line-length 100, configured ignores) |
-| **Docker / Compose** | Latest | Containerized `api` + `postgres:16` |
+**11 tests** en 5 módulos, con un gate de cobertura del **70%** definido en `addopts`, de
+modo que la CI falla si la cobertura baja de ese umbral.
+
+| Comportamiento | Test que lo demuestra |
+| :--- | :--- |
+| El ciclo registro → login → refresh funciona | `test_register_login_refresh` |
+| El flujo completo espacio de trabajo → tablero → tarea funciona | `test_workspace_board_task_flow` |
+| Un miembro sin permiso de administrador recibe el rechazo esperado | `test_member_rbac_admin_only` |
+| La conexión sin token se rechaza | `test_ws_rejects_missing_token` |
+| La conexión con token inválido se rechaza | `test_ws_rejects_invalid_token` |
+| El gestor mantiene salas separadas de tablero y de espacio de trabajo | `test_manager_board_and_workspace_rooms` |
+| Un enum inválido en un filtro se rechaza con 422 | `test_invalid_enum_rejected_422` |
+| La paginación y los filtros de tareas funcionan | `test_pagination_and_filters` |
+| El hash de contraseña hace round-trip | `test_password_hashing` |
+| El token se firma y se verifica correctamente | `test_token_roundtrip` |
+
+**El coste de esta base de tests, dicho con claridad:** 11 tests son una cobertura
+funcionalmente sólida pero cuantitativamente la más baja de los cuatro proyectos. Es el
+primer sitio donde ampliaría si tuviera que seguir trabajando en él.
 
 ---
 
-## Architecture Overview
+## Arquitectura
 
-### Module Structure
 ```
 app/
+├── main.py                  # Routers + WebSockets
 ├── core/
-│   ├── config.py       # Pydantic-Settings from .env
-│   ├── security.py     # bcrypt + JWT (access/refresh + rotation)
-│   └── deps.py         # HTTPBearer auth, RBAC dependencies
+│   ├── config.py            # Pydantic Settings
+│   ├── security.py          # bcrypt + JWT (python-jose)
+│   └── deps.py              # get_current_user
 ├── db/
-│   └── session.py      # SQLAlchemy engine + session generator
-├── models/             # SQLModel tables (User, RefreshToken, Workspace, WorkspaceMember, Board, Task)
-├── schemas/            # Pydantic request/response models
-├── routers/            # REST + WebSocket endpoints
-│   ├── auth.py         # register, login, refresh, logout, me
-│   ├── workspaces.py   # CRUD + member management (admin only)
-│   ├── boards.py       # CRUD + task listing with filters
-│   ├── tasks.py        # CRUD + move (status/position) + WS notify
-│   └── ws.py           # /ws/boards/{id}, /ws/workspaces/{id}
-├── services/           # Business logic (auth_service, workspace_service, board_service, task_service, ws_manager)
-├── main.py             # FastAPI app, router registration, /health
-└── __init__.py
+│   └── session.py           # Engine y sesión por request
+├── models/
+│   ├── user.py              # User, RefreshToken
+│   ├── workspace.py         # Workspace, WorkspaceMember, WorkspaceRole
+│   ├── board.py             # Board
+│   └── task.py              # Task, TaskStatus, TaskPriority
+├── schemas/                 # Contratos de request/response
+├── routers/
+│   ├── auth.py              # register, login, refresh, logout, me
+│   ├── workspaces.py        # Crear y listar espacios
+│   ├── boards.py            # Crear, listar, detalle, tareas
+│   ├── tasks.py             # CRUD + move
+│   └── ws.py                # Handshake y salas
+└── services/
+    ├── auth_service.py      # Login, refresh, logout
+    ├── board_service.py
+    ├── task_service.py
+    ├── workspace_service.py
+    └── ws_manager.py        # ConnectionManager
 ```
 
-### Domain Model (ER)
-```
-User (1) ───< (M) RefreshToken
-    │
-    ├──< (M) Workspace (owner) ───< (M) Board ───< (M) Task
-    │                                │
-    │                                └─── assignee (User, nullable)
-    │
-    └──< (M) WorkspaceMember (composite PK: workspace_id, user_id)
-              │
-              └── role: Enum(owner, admin, member)
+**El gestor de conexiones** mantiene las salas como un `defaultdict(set)` de WebSockets
+por nombre de sala. Las claves se derivan con prefijo explícito, de modo que un tablero con
+`id = 1` y un espacio de trabajo con `id = 1` **nunca** comparten la misma sala:
+
+```python
+self.rooms: dict[str, set[WebSocket]] = defaultdict(set)
+
+def board_room(board_id: int) -> str:
+    return f"board:{board_id}"
+
+def workspace_room(workspace_id: int) -> str:
+    return f"workspace:{workspace_id}"
 ```
 
-* **Workspace:** Unique `slug` (human-readable ID), `owner_id` FK to User.
-* **WorkspaceMember:** Join table with `WorkspaceRole` enum; composite PK prevents duplicate membership.
-* **Board:** Belongs to workspace; cascades to tasks.
-* **Task:** Kanban-ready — `status` (todo/in_progress/done), `priority` (low/medium/high), `position` (float for drag-drop ordering), optional `assignee_id`, `due_date`.
+Ese prefijo es la barrera de aislamiento entre tenants. Es una línea de código que evita
+una fuga de datos entre clientes.
+
+**La difusión es bidireccional en jerarquía:** un cambio en una tarea notifica al tablero
+y, además, al espacio de trabajo que lo contiene, para que quien esté mirando el tablero de
+equipo también lo reciba.
 
 ---
 
-## Concurrency & Real-Time Guarantees
+## Modelo de datos
 
-| Layer | Mechanism |
+**6 tablas** y 2 enums.
+
+| Tabla | Campos clave |
 | :--- | :--- |
-| **Database** | `pool_pre_ping=True` for connection health; transactions via context-manager sessions (`session.commit()`/`rollback()` in `try/except/finally` blocks in all services). |
-| **WebSocket Auth** | Token validated on connect via `security.decode_token()`; membership checked via `WorkspaceMember` lookup before `manager.connect()`. |
-| **Broadcast** | `ConnectionManager` uses `defaultdict(set[WebSocket])` per room; `broadcast_to_room` iterates snapshot (`list(...)`) to avoid mutation during send; failed sends auto-disconnect. |
-| **Event Payload** | `{ "event": "task.created|updated|moved|deleted", "board_id": int, "task_id": int, "workspace_id": int (workspace channel) }` |
+| `user` | `email`, `hashed_password` (bcrypt), `full_name` |
+| `refresh_token` | `token_hash` (SHA-256, UNIQUE, index), `user_id`, `expires_at`, `revoked` |
+| `workspace` | `name`, `owner_id` (FK) |
+| `workspace_member` | `workspace_id`, `user_id`, `role` (`owner`/`admin`/`member`) |
+| `board` | `name`, `workspace_id` (FK) |
+| `task` | `title`, `description`, `board_id` (FK), `status`, `priority`, `position`, `assignee_id` |
+
+**Enums:** `TaskStatus` (`todo` / `in_progress` / `done`) y `TaskPriority`
+(`low` / `medium` / `high`).
+
+**`position` como decimal.** Las columnas de orden en un Kanban no se indexan como enteros
+porque mover una tarjeta del inicio al final obligaría a renumerar todas las demás. Un valor
+decimal permite insertar entre dos posiciones sin tocar el resto.
 
 ---
 
-## API Reference
+## API
 
-Base URL: `http://localhost:8001` (Docker) or `http://localhost:8000` (local)
-
-### Health
-| Method | Path | Description |
+### Autenticación
+| Método | Ruta | Descripción |
 | :--- | :--- | :--- |
-| `GET` | `/health` | Liveness probe → `{"status": "ok"}` |
+| POST | `/auth/register` | Crear cuenta (201) |
+| POST | `/auth/login` | Devuelve access + refresh |
+| POST | `/auth/refresh` | Rota el refresh token |
+| POST | `/auth/logout` | Revoca los refresh tokens (204) |
+| GET | `/auth/me` | Usuario autenticado |
 
-### Authentication (`/auth`)
-| Method | Path | Body | Response | Notes |
-| :--- | :--- | :--- | :--- | :--- |
-| `POST` | `/register` | `UserCreate` (email, password, full_name) | `201 UserRead` | `409` if email exists |
-| `POST` | `/login` | `LoginRequest` (email, password) | `200 TokenPair` | Sets `RefreshToken` hash in DB |
-| `POST` | `/refresh` | `RefreshRequest` (refresh_token) | `200 TokenPair` | Rotates: revokes old, issues new pair |
-| `POST` | `/logout` | `LogoutRequest` (refresh_token optional) | `204` | Revokes all or specific refresh token |
-| `GET` | `/me` | — | `200 UserRead` | Requires `Bearer <access_token>` |
+### Espacios de trabajo y tableros
+| Método | Ruta | Descripción |
+| :--- | :--- | :--- |
+| POST | `/workspaces` | Crear espacio (201) |
+| GET | `/workspaces` | Listar los espacios del usuario |
+| POST | `/boards` | Crear tablero (201) |
+| GET | `/workspaces/{workspace_id}/boards` | Tableros de un espacio |
+| GET | `/boards/{board_id}` | Detalle del tablero |
+| GET | `/boards/{board_id}/tasks` | Tareas del tablero, con filtros y paginación |
 
-### Workspaces (`/workspaces`)
-| Method | Path | Auth | Response | Notes |
-| :--- | :--- | :--- | :--- | :--- |
-| `POST` | `/workspaces` | `Bearer` | `201 WorkspaceRead` | Creator becomes `owner` |
-| `GET` | `/workspaces` | `Bearer` | `200 List[WorkspaceRead]` | Only workspaces user is member of |
-| `POST` | `/workspaces/{id}/members` | `Bearer` (admin/owner) | `201 MemberRead` | `403` if not admin; `409` if already member |
+### Tareas
+| Método | Ruta | Descripción |
+| :--- | :--- | :--- |
+| POST | `/tasks` | Crear tarea (201) y difundir `task.created` |
+| PATCH | `/tasks/{id}` | Actualizar y difundir `task.updated` |
+| POST | `/tasks/{id}/move` | Mover de columna y difundir `task.moved` |
+| DELETE | `/tasks/{id}` | Eliminar y difundir `task.deleted` |
 
-### Boards (`/boards`, `/workspaces/{id}/boards`)
-| Method | Path | Auth | Response | Notes |
-| :--- | :--- | :--- | :--- | :--- |
-| `POST` | `/boards` | `Bearer` (admin/owner) | `201 BoardRead` | Requires `workspace_id` in body |
-| `GET` | `/workspaces/{id}/boards` | `Bearer` (member) | `200 List[BoardRead]` | |
-| `GET` | `/boards/{id}` | `Bearer` (member) | `200 BoardRead` | |
+### WebSockets
+| Ruta | Descripción |
+| :--- | :--- |
+| `/ws/boards/{board_id}?token=<JWT>` | Sala del tablero. Cierra 4401 sin token, 4403 sin permiso |
+| `/ws/workspaces/{workspace_id}?token=<JWT>` | Sala del espacio de trabajo, mismas reglas |
 
-### Tasks (`/tasks`, `/boards/{id}/tasks`)
-| Method | Path | Auth | Response | Notes |
-| :--- | :--- | :--- | :--- | :--- |
-| `POST` | `/tasks` | `Bearer` (member) | `201 TaskRead` | Broadcasts `task.created` |
-| `PATCH` | `/tasks/{id}` | `Bearer` (member) | `200 TaskRead` | Partial update; broadcasts `task.updated` |
-| `POST` | `/tasks/{id}/move` | `Bearer` (member) | `200 TaskRead` | `TaskMove` (status/position); broadcasts `task.moved` |
-| `DELETE` | `/tasks/{id}` | `Bearer` (member) | `204` | Broadcasts `task.deleted` |
-| `GET` | `/boards/{id}/tasks` | `Bearer` (member) | `200 List[TaskRead]` | Filters: `status`, `priority`; pagination: `skip`, `limit` (max 100) |
+**Los cuatro eventos emitidos**
 
-### WebSocket Real-Time
-| Channel | URL | Auth | Events Received |
-| :--- | :--- | :--- | :--- |
-| **Board** | `/ws/boards/{board_id}?token=<access_token>` | Valid access token + board membership | `task.created`, `task.updated`, `task.moved`, `task.deleted` |
-| **Workspace** | `/ws/workspaces/{workspace_id}?token=<access_token>` | Valid access token + workspace membership | All board events within workspace (includes `workspace_id` in payload) |
+```json
+{"event": "task.moved", "board_id": 7, "task_id": 42}
+{"event": "task.moved", "board_id": 7, "task_id": 42, "workspace_id": 3}
+```
 
-> **Connection Codes:** `4401` = invalid/missing token, `4403` = not a member.
+El primero llega a la sala del tablero; el segundo, a la del espacio de trabajo.
+
+**Cliente JavaScript**
+
+```javascript
+const ws = new WebSocket(
+  `ws://localhost:8000/ws/boards/7?token=${accessToken}`
+);
+
+ws.onmessage = (e) => {
+  const { event, task_id } = JSON.parse(e.data);
+  if (event === "task.moved") reloadColumn();
+};
+
+ws.onclose = (e) => {
+  if (e.code === 4401) reauthenticate();   // credenciales caducadas
+  if (e.code === 4403) requestAccess();    // sin permiso
+};
+```
 
 ---
 
-## Quick Start
+## Autorización
 
-### Option A: Docker Compose (Recommended)
+Tres roles por espacio de trabajo, en `WorkspaceRole`:
+
+| Rol | Permisos |
+| :--- | :--- |
+| `owner` | Control total del espacio, incluida la propiedad |
+| `admin` | Administra tableros y tareas del espacio |
+| `member` | Trabaja en las tareas; no administra la estructura |
+
+El RBAC se comprueba en dos puntos: en los endpoints HTTP y **de nuevo en el handshake del
+WebSocket**. La duplicación es intencional, porque son dos caminos de entrada distintos y
+validar solo uno deja el otro abierto.
+
+---
+
+## Seguridad
+
+**Contraseñas:** `bcrypt` con sal generada por `gensalt()`.
+
+**Refresh tokens: SHA-256, nunca en texto plano.** Este es el punto que más importa y el
+que más se olvida. Guardar el refresh token tal cual en la base de datos significa que una
+fuga de la base de datos entrega tokens de sesión **válidos y utilizables**. Aquí solo se
+almacena el digest:
+
+```python
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+```
+
+Que SHA-256 sea aceptable aquí, y bcrypt no, se explica por la naturaleza del valor: una
+contraseña la elige una persona y se puede atacar por fuerza bruta, así que necesita un
+algoritmo **lento**; un refresh token lo genera el servidor con entropía completa, así que
+no hay diccionario que probar y basta un hash **rápido** para que una lectura de la base de
+datos no sirva para autenticarse.
+
+**Access tokens:** 30 minutos, JWT HS256 con `python-jose`.
+**Refresh tokens:** 7 días, con rotación en cada uso y campo `revoked`.
+**El logout revoca** todos los refresh tokens del usuario, o solo el proporcionado.
+
+---
+
+## Pruebas
+
+**11 tests** en 5 módulos.
+
+| Módulo | Tests | Cubre |
+| :--- | :--- | :--- |
+| `test_api.py` | 3 | Health, registro/login/refresh, flujo espacio → tablero → tarea |
+| `test_ws.py` | 3 | Salas de tablero y espacio, rechazo sin token, rechazo con token inválido |
+| `test_security.py` | 2 | Hash de contraseña, round-trip de token |
+| `test_task_filters.py` | 2 | Paginación y filtros, enum inválido rechazado con 422 |
+| `test_rbac.py` | 1 | Un miembro no puede ejecutar acciones de administrador |
 
 ```bash
-# 1. Clone & configure
-git clone <repo-url>
-cd Proyecto2
+pytest                                    # aplica el gate del 70% automáticamente
+pytest --cov=app --cov-report=term-missing
+pytest -k "ws or rbac"                    # solo WebSockets y permisos
+```
+
+**Los tests usan SQLite en memoria** (`sqlite://` con `StaticPool`), sin servicios externos
+y sin migraciones. Es lo que hace la suite rápida, pero tiene un coste que conviene decir:
+el comportamiento se valida contra SQLite, no contra PostgreSQL.
+
+---
+
+## Integración continua
+
+`.github/workflows/ci.yml` define **4 jobs** en paralelo más un aggregator de fallos.
+
+| Job | Qué hace |
+| :--- | :--- |
+| **Lint** | `ruff check .` y `ruff format --check .` |
+| **Typecheck** | `mypy app` con `strict = true` |
+| **Tests** | `pytest` con cobertura y gate del 70% |
+| **Docker Build & Smoke Test** | Construye la imagen, levanta compose y verifica `/health` en el puerto **8001** |
+| **Notify on Failure** | `needs: [lint, typecheck, test, docker]` |
+
+A diferencia del proyecto de SSO, esta CI **no** levanta PostgreSQL ni Redis: el workflow
+indica explícitamente que los tests no requieren servicios ni migraciones, y el smoke test
+sí verifica que la imagen arranque y responda.
+
+**Configuración:** Ruff con `line-length = 100`; MyPy con `strict = true`; el gate de
+cobertura del 70% en `addopts` de `pyproject.toml`.
+
+---
+
+## Puesta en marcha
+
+**Requisitos:** Docker Desktop en ejecución.
+
+```bash
+# 1. Clonar y entrar
+git clone https://github.com/jerryszc/Realtime-task-api.git
+cd Realtime-task-api
+
+# 2. Configurar
 cp .env.example .env
-# Edit .env: set strong SECRET_KEY (min 32 chars), DB credentials
+#   Antes de nada: cambia SECRET_KEY
 
-# 2. Build & run (API on 8001, Postgres on 5433)
-docker compose up -d --build
+# 3. Levantar
+docker compose up --build -d
 
-# 3. Run migrations (inside API container or locally with DB exposed)
-docker compose exec api alembic upgrade head
-# Or locally:
-# DATABASE_URL=postgresql+psycopg2://taskuser:taskpass@localhost:5433/taskdb alembic upgrade head
-
-# 4. Verify
+# 4. Verificar
 curl http://localhost:8001/health
-# Swagger UI: http://localhost:8001/docs
+
+# 5. Documentación
+#    http://localhost:8001/docs
 ```
 
-**Service Map:**
-| Service | Internal Port | External Port | Notes |
-| :--- | :--- | :--- | :--- |
-| `db` | 5432 | 5433 | `postgres:16`, volume `postgres_data`, `pg_isready` healthcheck |
-| `api` | 8000 | 8001 | Hot-reload via volume mount `./app:/code/app` |
+> El puerto por defecto en Docker Compose es el **8001**, para no chocar con otro servicio
+> local en el 8000.
 
-**Stop/Reset:**
 ```bash
-docker compose down           # Keep data
-docker compose down -v        # Delete postgres_data volume
+docker compose down
+docker compose down -v
 ```
 
----
-
-### Option B: Local Development (Fast Iteration)
+### Desarrollo local sin Docker
 
 ```bash
-# 1. Virtual environment
-python -m venv venv
-source venv/Scripts/activate    # Git Bash / Windows
-pip install -e ".[test]"        # Installs package + test deps (pytest, httpx)
-
-# 2. Local PostgreSQL (or use Docker db only)
-# Ensure Postgres 16 running on localhost:5433 with DB/taskdb
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 cp .env.example .env
-# Edit .env with local credentials
-
-# 3. Migrate
 alembic upgrade head
-
-# 4. Run API with reload
-uvicorn app.main:app --reload --port 8000
-
-# 5. Run tests (SQLite in-memory, fully isolated)
-pytest -v
-# Expected: all tests pass (auth, RBAC, filters, WS manager)
+uvicorn app.main:app --reload
 ```
 
----
-
-## Testing Strategy
-
-**Framework:** `pytest` + `TestClient` (Starlette) + SQLite in-memory (`StaticPool`) per test.
-
-**Test Modules:**
-| File | Coverage |
-| :--- | :--- |
-| `test_api.py` | Health, register/login/refresh/me, full workspace→board→task→move flow |
-| `test_rbac.py` | Owner vs member vs outsider: admin-only member add, board create, board list access |
-| `test_task_filters.py` | Status/priority filters, pagination bounds, invalid enum rejection (`422`) |
-| `test_ws.py` | `ConnectionManager` unit tests (connect/disconnect/broadcast), WS auth rejection (missing/invalid token) |
-| `test_security.py` | Password hashing, token decode/verify |
-
-**Run Commands:**
-```bash
-pytest -v                    # Verbose
-pytest -x                    # Stop on first failure
-pytest -k "rbac"             # Keyword filter
-pytest tests/test_ws.py      # Single module
-```
-
----
-
-## Database Migrations (Alembic)
+### Migraciones
 
 ```bash
-# Generate migration (autogenerate from model changes)
-alembic revision --autogenerate -m "descriptive message"
-
-# Apply
+alembic revision --autogenerate -m "descripcion"
 alembic upgrade head
-
-# Rollback one
-alembic downgrade -1
-
-# History
-alembic history --verbose
+alembic current
 ```
-
-*Config:* `alembic.ini` → `script_location = alembic`; `env.py` reads `settings.DATABASE_URL`.
 
 ---
 
-## Environment Variables (`.env`)
+## Variables de entorno
 
-| Variable | Default | Description |
+| Variable | Por defecto | Descripción |
 | :--- | :--- | :--- |
-| `DATABASE_URL` | `postgresql+psycopg2://taskuser:taskpass@localhost:5433/taskdb` | SQLAlchemy URL |
-| `SECRET_KEY` | *required* | JWT signing key (min 32 chars, **never commit**) |
-| `POSTGRES_USER` | `taskuser` | DB user (for Compose) |
-| `POSTGRES_PASSWORD` | `taskpass` | DB password (for Compose) |
-| `POSTGRES_DB` | `taskdb` | DB name (for Compose) |
-| `ALGORITHM` | `HS256` | JWT algorithm |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | Access token TTL |
-| `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token TTL |
-
-> **Security:** `.env` is gitignored. Use `.env.example` as template. Generate `SECRET_KEY` with: `openssl rand -hex 32`.
+| `SECRET_KEY` | `change-me-in-env` | **Cambiar en producción.** Firma de los JWT |
+| `ALGORITHM` | `HS256` | Algoritmo de firma |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | Vigencia del access token |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Vigencia del refresh token |
+| `DATABASE_URL` | `postgresql+psycopg://postgres:postgres@db:5432/realtime` | Conexión a PostgreSQL |
 
 ---
 
-## CI/CD (GitHub Actions)
+## Alcance y limitaciones
 
-Workflow (`.github/workflows/ci.yml` — inferred from project structure):
-1. **Lint:** `ruff check .` (line-length 100, configured ignores)
-2. **Test:** `pytest -v` against SQLite in-memory
-3. Runs on every `push` and `pull_request` to `main`
-
----
-
-## Project Structure
-
-```
-.
-├── .github/workflows/        # CI pipelines (ruff + pytest)
-├── alembic/                  # Migration scripts + env.py
-├── app/
-│   ├── core/                 # config, security (JWT+bcrypt), deps (auth+RBAC)
-│   ├── db/                   # SQLAlchemy engine + session
-│   ├── models/               # 5 SQLModel tables + 3 enums
-│   ├── schemas/              # Pydantic request/response models
-│   ├── routers/              # 5 REST routers + 1 WS router
-│   ├── services/             # Business logic + ConnectionManager
-│   └── main.py               # FastAPI entrypoint
-├── tests/                    # 6 test modules (conftest, api, rbac, filters, ws, security)
-├── .dockerignore
-├── .env.example
-├── .gitignore
-├── alembic.ini
-├── docker-compose.yml
-├── Dockerfile
-├── pyproject.toml            # Package metadata, deps, ruff/pytest config
-├── requirements.txt          # Pinned deps (mirrors pyproject.toml)
-└── README.md
-```
+- **Los tests corren sobre SQLite en memoria**, no sobre PostgreSQL. El comportamiento
+  queda verificado, pero no el de la base de datos de producción.
+- **El `ConnectionManager` es en memoria y por proceso.** Con varias réplicas, un cliente
+  conectado a la réplica A no recibe los eventos emitidos en la réplica B. El siguiente paso
+  natural es un bus (Redis Pub/Sub o similar) por detrás de la misma interfaz.
+- **No hay refresh token en el query string del WebSocket más allá de la conexión inicial.**
+  Como la conexión es de larga duración, un token de 30 minutos caduca mientras sigue
+  abierta; la reconexión con token nuevo es la que resuelve esto, y no hay renovación
+  automática implementada.
+- **No hay paginación por cursor**: la paginación es por `skip`/`limit`.
 
 ---
 
-## License
+## Licencia
 
-MIT — Free for personal and commercial use.
+MIT — uso libre comercial y educativo. Ver [LICENSE](LICENSE).
