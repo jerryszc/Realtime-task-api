@@ -31,6 +31,9 @@ build-backend = "setuptools.build_meta"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# README.md holds Python snippets for illustration. They are intentionally not
+# kept byte-identical to the source, and formatting them makes CI fail on docs.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = [
