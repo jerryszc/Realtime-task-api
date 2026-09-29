@@ -75,6 +75,59 @@ way to know what happened.
 
 ---
 
+## Use case
+
+A WebSocket API only makes sense where the delay is paid for: when the person is looking at
+the screen and expects the change to already be there. In an HTTP CRUD, refreshing is a
+click and a one-second cost. On a collaborative board, refreshing means two people work off
+wrong information.
+
+**Where it fits inside a real product**
+
+| Context | How it is used | Why this design |
+| :--- | :--- | :--- |
+| **Kanban board inside a team SaaS** | The collaboration module of a tool like Trello or Linear | The server pushes `task.created`, `task.updated`, `task.moved` and `task.deleted` to the open connections on that board, so one person moves a task and everyone else sees it without reloading |
+| **Internal tool for a company spread over several offices** | Incident tracking shared between teams | Workspace-scoped rooms stop one team's traffic mixing with another's, which is the classic failure of a shared WebSocket |
+| **Operations dashboard with several tenants** | Each customer sees only their own boards | The `workspace_id` travels in the handshake, and the server verifies membership before registering the connection, not after receiving data |
+
+**What this adds over REST with polling**
+
+The cost of keeping state synchronised is not driven by the number of users, it is driven by
+the number of queries that find nothing:
+
+- **Traffic scales with changes, not with spectators.** With 50 people watching a quiet board
+  the cost is zero: there is nothing to push. With polling, that is 50 requests per interval
+  returning "nothing changed", and all of them reach the database before being discarded.
+- **The server is the source of truth.** A client applying its own patch can drift from the
+  server. With server-sent events, everyone converges to the same state.
+- **Close codes distinguish the reason.** `4401` means "re-authenticate" and `4403` means "you
+  may be connected but you are not allowed, stop retrying". With the generic `1005` from the
+  RFC the client cannot tell an expired token from a denied one, and ends up retrying in a
+  loop.
+
+**What would be needed before production**
+
+- **Redis Pub/Sub behind the `ConnectionManager`.** The connection manager is currently an
+  in-process dictionary, so with two replicas each one only notifies its own clients: a user
+  connected to replica A does not see what happens on B. This is the most important
+  structural gap in the project, and also the easiest one to explain in an interview.
+- **Token renewal on the client.** The access token lasts 30 minutes. When it expires, the
+  open connection is still alive and cannot refresh by itself: the client has to close,
+  refresh and reconnect, or the server has to send an expiry notice before it happens.
+- **Connection and message-rate limits per user.** A badly written reconnect loop can open
+  hundreds of connections against the same user.
+- **Tests against real PostgreSQL in CI.** The suite runs on in-memory SQLite with
+  `StaticPool`, which is fast and convenient but does not reproduce row locks or PostgreSQL
+  types. The other three projects in this profile already do it with service containers.
+
+**Which role this work maps to**
+
+Backend Developer on collaboration tooling, multi-tenant SaaS, or real-time products. It is
+the kind of work where the details decide outcomes: a WebSocket that leaks data across
+tenants is a security incident, not a performance bug.
+
+---
+
 ## Verifiable impact
 
 **11 tests** across 5 modules, with a **70% coverage gate** set in `addopts`, so CI fails if

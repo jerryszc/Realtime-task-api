@@ -76,6 +76,62 @@ imposible saber qué pasó.
 
 ---
 
+## Contexto de uso
+
+Una API de WebSockets sólo tiene sentido donde el retraso se paga: cuando la persona está
+mirando la pantalla y espera que el cambio ya esté ahí. En un CRUD HTTP, recargar es un
+clic y un coste de un segundo. En un tablero colaborativo, recargar significa que dos
+personas trabajen sobre información equivocada.
+
+**Dónde encaja dentro de un producto real**
+
+| Contexto | Cómo se usa | Por qué este diseño |
+| :--- | :--- | :--- |
+| **Tablero Kanban dentro de un SaaS de equipos** | El módulo de colaboración de una herramienta tipo Trello o Linear | El servidor empuja `task.created`, `task.updated`, `task.moved` y `task.deleted` a las conexiones abiertas de ese tablero, así que una persona mueve una tarea y la ve el resto sin recargar |
+| **Herramienta interna de una empresa con varios pisos** | Seguimiento de incidencias compartido entre equipos | Las salas por workspace evitan que el tráfico de un equipo se mezcle con el de otro, que es el problema clásico de un WebSocket compartido |
+| **Panel de operaciones con varios tenants** | Cada cliente ve únicamente sus propios tableros | El `workspace_id` va en el mensaje de suscripción, y el servidor valida la pertenencia antes de registrar la conexión, no después de recibir datos |
+
+**Qué aporta frente a REST con polling**
+
+El coste de mantener el estado sincronizado no lo marca el número de usuarios, lo marca el
+número de consultas que no encuentran nada:
+
+- **El tráfico escala con los cambios, no con los espectadores.** Con 50 personas mirando un
+  tablero quieto, el coste es cero: no hay nada que empujar. Con polling, serían 50
+  peticiones por intervalo devolviendo "nada ha cambiado", y todas llegarían a la base de
+  datos antes de descartarse.
+- **El servidor es la fuente de la verdad.** Un cliente que aplica su propio parche puede
+  divergir del servidor. Con eventos del servidor, todos convergen al mismo estado.
+- **Los códigos de cierre distinguen el motivo.** `4401` significa "vuelve a
+  autenticarte" y `4403` significa "puedes estar conectado pero no tienes permiso, deja de
+  reintentar". Con el `1005` genérico de la RFC el cliente no puede diferenciar un token
+  caducado de un acceso denegado, y termina reintentando en bucle.
+
+**Qué tendría que añadirse antes de ponerlo en producción**
+
+- **Redis Pub/Sub detrás del `ConnectionManager`.** Hoy el gestor de conexiones es un
+  diccionario en memoria del proceso, así que con dos réplicas cada una solo notifica a sus
+  propios clientes: el usuario conectado a la réplica A no ve lo que pasa en la B. Es el
+  defecto estructural más importante de este proyecto, y también el más fácil de explicar en
+  una entrevista.
+- **Renovación del token en el cliente.** El access token dura 30 minutos. Cuando expira, la
+  conexión abierta sigue viva y tampoco puede refrescar sola: hace falta que el cliente
+  cierre, refresque y vuelva a conectar, o que el servidor envíe un aviso de expiración antes
+  de que ocurra.
+- **Límite de conexiones y de frecuencia por usuario.** Un bucle de reconexión mal escrito
+  puede abrir cientos de conexiones contra el mismo usuario.
+- **Pruebas contra PostgreSQL real en CI.** Los tests usan SQLite en memoria con `StaticPool`,
+  que es rápido y cómodo pero no reproduce los bloqueos de fila ni los tipos de PostgreSQL.
+  Los otros tres proyectos de este perfil ya lo hacen con contenedores de servicio.
+
+**A qué puesto corresponde este trabajo**
+
+Backend Developer en herramientas de colaboración, SaaS multi-tenant o productos en tiempo
+real. Es el tipo de trabajo donde el detalle importa: un WebSocket que filtra datos entre
+tenant es un incidente de seguridad, no un bug de rendimiento.
+
+---
+
 ## Impacto verificable
 
 **11 tests** en 5 módulos, con un gate de cobertura del **70%** definido en `addopts`, de
